@@ -66,14 +66,14 @@ class BinanceSimulator:
         else:
             print(f'Step {self._step}')
 
-    def run(self, strategy:TradingStrategy, step:int=1, offset:int=100):
+    def run(self, strategy:TradingStrategy, step:int=1, offset:int=100, max_step:int=1000):
         i = 0
         while i < offset:
             self.tick(None, step)
-            i += 1
-        while i < self.max_step:
+            i += step
+        while i < max_step:
             self.tick(strategy, step)
-            i +=1
+            i += step
 
 if __name__ == '__main__':
     bs = BinanceSimulator(
@@ -89,12 +89,7 @@ if __name__ == '__main__':
                  n_jobs=4)
     t1 = time.time()
     print(f'Time taken {t1 - t0}')
-    
-
-
-    for symb in symbols:
-        print(symb, len(bs.data[symb]))
-
+    bs.run(None, 1, 100, 1000)
 
         
             
