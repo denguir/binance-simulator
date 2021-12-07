@@ -60,6 +60,24 @@ Simulator:
 - pnl_hist
 
 
-#### 
 
-cache disk: symbol interval
+## Strategy
+
+### sell:
+return pairs to sell at step + 1, and how much of it
+verify that pair is available in portfolio beforehand
+
+### apply sell and update balance:
+simulator side
+
+### buy:
+return pairs to buy at step + 1, and how much of it
+verify that pair is available in portfolio beforehand
+
+### apply buy and update balance:
+simulator side
+
+### What price to choose:
+One cannot choose the price, only the time:
+the simulator will choose the close price of last tick but other options might be available later
+
