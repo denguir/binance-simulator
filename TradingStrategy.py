@@ -9,10 +9,13 @@ class TradingStrategy:
         raise NotImplementedError("A sell strategy is needed.")
 
 
-class HoldStrategy(TradingStrategy):
+
+class BTCHoldStrategy(TradingStrategy):
     
     def buy(self, data, portfolio):
         return {'BTCUSDT': 1} 
 
     def sell(self, data, portfolio):
         return {}
+
+ 

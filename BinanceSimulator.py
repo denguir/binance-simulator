@@ -1,9 +1,14 @@
 import logging
 import pandas as pd
 from TradingStrategy import TradingStrategy
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from binance.client import Client
 from joblib import Parallel, delayed, parallel_backend
+
+
+logging.basicConfig(level=logging.INFO, 
+                   format='%(asctime)s :: %(levelname)s :: %(name)s :: %(funcName)s :: %(message)s')
+logger = logging.getLogger(__name__)
 
 
 class BinanceSimulator:
@@ -20,16 +25,23 @@ class BinanceSimulator:
         self._client = Client(None, None)
         self.symbols_info = self.get_symbols_info()
         self._step = 0
+        self._max_step = 0
 
         self._data = {}
         self.portfolio_hist = {self._step : self.portfolio}
         self.balance_hist = pd.DataFrame(data=[[self._step, self.balance, self.unit]],
                                          columns=['step', 'balance', 'unit'])
-        self.trade_hist = pd.DataFrame(columns=['step', 'ts', 'side', 'symbol', 'quantity', 'price'])
+        self.trade_hist = pd.DataFrame(
+            columns=['step', 'ts', 'side', 'symbol', 'quantity', 'price'])
 
     @property
     def data(self):
         return {symb : df[:self._step] for symb, df in self._data.items()}
+
+    @property
+    def fee(self):
+        # VIP 0 fees (taker/maker) with BNB discount allowed
+        return 0.000750
 
     @staticmethod
     def to_timestamp_ms(dt):
@@ -64,6 +76,7 @@ class BinanceSimulator:
                                             'number_of_trades', 'taker_buy_base_asset_volume', 
                                             'taker_buy_quote_asset_volume', 'ignore']
                                         ).apply(pd.to_numeric)
+        self._max_step = max(self._max_step, len(klines))
 
     def load_data(self, date_from:datetime, date_to:datetime, symbols: list='all', resolution: str='1d', n_jobs=4):
         # make sure to deal with the case where we dont have the same amount of data for the same time window
@@ -82,9 +95,19 @@ class BinanceSimulator:
                 return True
         return False
 
+    def get_min_trading_qty(self, symbol):
+        symb_info = self.symbols_info[self.symbols_info['symbol'] == symbol].to_dict('list')
+        min_qty = float(symb_info['filters'][0][2]['minQty'])
+        return min_qty
+
+    def get_max_trading_qty(self, symbol):
+        symb_info = self.symbols_info[self.symbols_info['symbol'] == symbol].to_dict('list')
+        max_qty = float(symb_info['filters'][0][2]['maxQty'])
+        return max_qty
+
     def get_last_kline(self, symbol):
         df = self.data[symbol]
-        return df.iloc[self._step]
+        return df.iloc[self._step - 1]
 
     def get_price(self, base, quote):
         '''Return close price of base w.r.t quote'''
@@ -122,31 +145,61 @@ class BinanceSimulator:
             balance += (price * qty)
         self.balance = balance
 
-    def create_buy_order(self, symbol, quantity):
+    def create_buy_order(self, symbol, quantity, handle='max'):
         base_asset, quote_asset = self.split_symbol(symbol)
         last_kline = self.get_last_kline(symbol)
-        if self.portfolio[quote_asset] >= quantity * last_kline['price_close']:
-            self.portfolio[base_asset] += quantity
+        if self.portfolio.get(quote_asset, 0) >= quantity * last_kline['price_close']:
+            self.portfolio[base_asset] = self.portfolio.get(base_asset, 0) + ((1 - self.fee) * quantity)
             self.portfolio[quote_asset] -= quantity * last_kline['price_close']
 
-            self.trades_hist.append(
-                [self._step, last_kline['ts_close'], 'sell', symbol, quantity, last_kline['price_close']]
+            self.trade_hist.append(
+                [self._step, last_kline['ts_close'], 'buy', symbol, quantity, last_kline['price_close']]
                 )
         else:
-            raise Exception(f"Not enough liquidity to buy {quantity} of {symbol}.")
+            logger.warning(f"step {self._step}: Not enough liquidity to buy {quantity} of {symbol}.")
+            if handle == 'max':
+                max_qty = self.portfolio.get(quote_asset, 0) / last_kline['price_close']
+                if max_qty >= self.get_min_trading_qty(symbol):
+                    self.portfolio[base_asset] = self.portfolio.get(base_asset, 0) + ((1 - self.fee) * max_qty)
+                    self.portfolio[quote_asset] = 0
+                
+                    self.trade_hist.append(
+                        [self._step, last_kline['ts_close'], 'buy', symbol, max_qty, last_kline['price_close']]
+                    )
+                    logger.warning(f"step {self._step}: Bought {max_qty} of {symbol}.")
+                else:
+                    logger.warning(f"step {self._step}: Ignoring buy order.")
+            elif handle == 'ignore':
+                logger.warning(f"step {self._step}: Ignoring buy order.")
 
-    def create_sell_order(self, symbol, quantity):
+    def create_sell_order(self, symbol, quantity, handle='max'):
         base_asset, quote_asset = self.split_symbol(symbol)
         last_kline = self.get_last_kline(symbol)
-        if self.portfolio[base_asset] >= quantity:
+        if self.portfolio.get(base_asset, 0) >= quantity:
             self.portfolio[base_asset] -= quantity
-            self.portfolio[quote_asset] += quantity * last_kline['price_close']
+            self.portfolio[quote_asset] = self.portfolio.get(quote_asset, 0) + \
+                                             ((1 - self.fee) * quantity) * last_kline['price_close']
 
-            self.trades_hist.append(
+            self.trade_hist.append(
                 [self._step, last_kline['ts_close'], 'sell', symbol, quantity, last_kline['price_close']]
                 )
         else:
-            raise Exception(f"Not enough liquidity to sell {quantity} of {symbol}.")
+            logger.warning(f"step {self._step}: Not enough liquidity to sell {quantity} of {symbol}.")
+            if handle == 'max':
+                max_qty = self.portfolio.get(base_asset, 0)
+                if max_qty >= self.get_min_trading_qty(symbol):
+                    self.portfolio[base_asset] = 0
+                    self.portfolio[quote_asset] = self.portfolio.get(quote_asset, 0) + \
+                                                    ((1 - self.fee) * max_qty) * last_kline['price_close']
+                
+                    self.trade_hist.append(
+                        [self._step, last_kline['ts_close'], 'sell', symbol, max_qty, last_kline['price_close']]
+                    )
+                    logger.warning(f"step {self._step}: Sold {max_qty} of {symbol}.")
+                else:
+                    logger.warning(f"step {self._step}: Ignoring sell order.")
+            elif handle == 'ignore':
+                logger.warning(f"step {self._step}: Ignoring sell order.")
 
     def tick(self, strategy:TradingStrategy, step:int=1):
         if strategy:
@@ -165,14 +218,23 @@ class BinanceSimulator:
         self.balance_hist.append([self._step, self.balance, self.unit])
         self.portfolio_hist[self._step] = self.portfolio
 
-    def run(self, strategy:TradingStrategy, step:int=1, offset:int=100, max_step:int=1000):
+    def run(self, strategy:TradingStrategy, step:int=1, offset:int=100):
         i = 0
         while i < offset:
             self.tick(None, step)
             i += step
-        while i < max_step:
+        while i < self._max_step:
             self.tick(strategy, step)
             i += step
+            print(self.balance)
+        print("End of simuation!")
+
+    def render(self):
+        # plot balance hist and pnl hist
+        # display trades table and pnl per trade (complicated)
+        # report of performances
+        pass
+    
 
             
 
