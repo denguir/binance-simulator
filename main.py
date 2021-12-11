@@ -24,3 +24,5 @@ if __name__ == '__main__':
     # init strategy
     strategy = BTCHoldStrategy()
     bs.run(strategy)
+    bs.render()
+    

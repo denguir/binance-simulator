@@ -1,5 +1,7 @@
 import logging
 import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
 from TradingStrategy import TradingStrategy
 from datetime import datetime
 from binance.client import Client
@@ -29,8 +31,8 @@ class BinanceSimulator:
 
         self._data = {}
         self.portfolio_hist = {self._step : self.portfolio}
-        self.balance_hist = pd.DataFrame(data=[[self._step, self.balance, self.unit]],
-                                         columns=['step', 'balance', 'unit'])
+        self.balance_hist = pd.DataFrame(data=[[self._step, self.balance]],
+                                         columns=['step', 'balance'])
         self.trade_hist = pd.DataFrame(
             columns=['step', 'ts', 'side', 'symbol', 'quantity', 'price'])
 
@@ -152,9 +154,9 @@ class BinanceSimulator:
             self.portfolio[base_asset] = self.portfolio.get(base_asset, 0) + ((1 - self.fee) * quantity)
             self.portfolio[quote_asset] -= quantity * last_kline['price_close']
 
-            self.trade_hist.append(
+            self.trade_hist.loc[len(self.trade_hist)] = \
                 [self._step, last_kline['ts_close'], 'buy', symbol, quantity, last_kline['price_close']]
-                )
+
         else:
             logger.warning(f"step {self._step}: Not enough liquidity to buy {quantity} of {symbol}.")
             if handle == 'max':
@@ -163,9 +165,9 @@ class BinanceSimulator:
                     self.portfolio[base_asset] = self.portfolio.get(base_asset, 0) + ((1 - self.fee) * max_qty)
                     self.portfolio[quote_asset] = 0
                 
-                    self.trade_hist.append(
+                    self.trade_hist.loc[len(self.trade_hist)] = \
                         [self._step, last_kline['ts_close'], 'buy', symbol, max_qty, last_kline['price_close']]
-                    )
+
                     logger.warning(f"step {self._step}: Bought {max_qty} of {symbol}.")
                 else:
                     logger.warning(f"step {self._step}: Ignoring buy order.")
@@ -180,9 +182,9 @@ class BinanceSimulator:
             self.portfolio[quote_asset] = self.portfolio.get(quote_asset, 0) + \
                                              ((1 - self.fee) * quantity) * last_kline['price_close']
 
-            self.trade_hist.append(
+            self.trade_hist.loc[len(self.trade_hist)] = \
                 [self._step, last_kline['ts_close'], 'sell', symbol, quantity, last_kline['price_close']]
-                )
+
         else:
             logger.warning(f"step {self._step}: Not enough liquidity to sell {quantity} of {symbol}.")
             if handle == 'max':
@@ -192,9 +194,9 @@ class BinanceSimulator:
                     self.portfolio[quote_asset] = self.portfolio.get(quote_asset, 0) + \
                                                     ((1 - self.fee) * max_qty) * last_kline['price_close']
                 
-                    self.trade_hist.append(
+                    self.trade_hist.loc[len(self.trade_hist)] = \
                         [self._step, last_kline['ts_close'], 'sell', symbol, max_qty, last_kline['price_close']]
-                    )
+
                     logger.warning(f"step {self._step}: Sold {max_qty} of {symbol}.")
                 else:
                     logger.warning(f"step {self._step}: Ignoring sell order.")
@@ -203,11 +205,11 @@ class BinanceSimulator:
 
     def tick(self, strategy:TradingStrategy, step:int=1):
         if strategy:
-            sell_orders = strategy.sell(self.data, self.portfolio)
+            sell_orders = strategy.sell(self.data, self.portfolio, self.balance)
             for symb, qty in sell_orders.items():
                 self.create_sell_order(symb, qty)
 
-            buy_orders = strategy.buy(self.data, self.portfolio)
+            buy_orders = strategy.buy(self.data, self.portfolio, self.balance)
             for symb, qty in buy_orders.items():
                 self.create_buy_order(symb, qty)
         else:
@@ -215,10 +217,10 @@ class BinanceSimulator:
 
         self._step += step
         self.update_balance()
-        self.balance_hist.append([self._step, self.balance, self.unit])
+        self.balance_hist.loc[self._step] = [self._step, self.balance]
         self.portfolio_hist[self._step] = self.portfolio
 
-    def run(self, strategy:TradingStrategy, step:int=1, offset:int=100):
+    def run(self, strategy:TradingStrategy, step:int=1, offset:int=100, verbose=0):
         i = 0
         while i < offset:
             self.tick(None, step)
@@ -227,13 +229,33 @@ class BinanceSimulator:
             self.tick(strategy, step)
             i += step
             print(self.balance)
+            print(self.portfolio)
         print("End of simuation!")
+
+    def calculate_pnl(self):
+        self.balance_hist['prev_balance'] = self.balance_hist['balance'].shift(1)
+        self.balance_hist['pnl'] = self.balance_hist['balance'] - self.balance_hist['prev_balance']
+        self.balance_hist['cum_pnl'] = self.balance_hist['pnl'].cumsum()
+        self.balance_hist['cum_pnl_perc'] = 100 * self.balance_hist['cum_pnl'] / self.balance_hist.loc[0, 'balance']
 
     def render(self):
         # plot balance hist and pnl hist
+        self.calculate_pnl()
+        fig, axs = plt.subplots(nrows=2, sharex=True)
+        sns.lineplot(data=self.balance_hist, x='step', y='balance', marker='o', ax=axs[0])
+        sns.lineplot(data=self.balance_hist, x='step', y='cum_pnl_perc', marker='o', ax=axs[1])
+
+        axs[0].set_title('Balance')
+        axs[0].set_xlabel('Step')
+        axs[0].set_ylabel(f'Balance {self.unit}')
+
+        axs[1].set_title('PnL')
+        axs[1].set_xlabel('Step')
+        axs[1].set_ylabel('PnL (%)')
+
+        plt.show()
         # display trades table and pnl per trade (complicated)
         # report of performances
-        pass
     
 
             

@@ -2,12 +2,11 @@
 
 class TradingStrategy:
 
-    def buy(self, data, portfolio):
+    def buy(self, data, portfolio, balance):
         raise NotImplementedError("A buy strategy is needed.")
 
-    def sell(self, data, portfolio):
+    def sell(self, data, portfolio, balance):
         raise NotImplementedError("A sell strategy is needed.")
-
 
 
 class BTCHoldStrategy(TradingStrategy):

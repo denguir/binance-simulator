@@ -81,3 +81,12 @@ simulator side
 One cannot choose the price, only the time:
 the simulator will choose the close price of last tick but other options might be available later
 
+
+
+## TODO
+
+- Add layer of Control before passing order
+- Buy at close maybe not suited (check next tick)
+- Render trades in coin evolution
+- Do a mapping step -> datetime for rendering
+- run accept an date_until arg (datetime)
