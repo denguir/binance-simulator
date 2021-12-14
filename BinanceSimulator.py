@@ -78,6 +78,10 @@ class BinanceSimulator:
                                             'number_of_trades', 'taker_buy_base_asset_volume', 
                                             'taker_buy_quote_asset_volume', 'ignore']
                                         ).apply(pd.to_numeric)
+
+        base, quote = self.split_symbol(symbol)
+        self.portfolio[base] = self.portfolio.get(base, 0)
+        self.portfolio[quote] = self.portfolio.get(quote, 0)
         self._max_step = max(self._max_step, len(klines))
 
     def load_data(self, date_from:datetime, date_to:datetime, symbols: list='all', resolution: str='1d', n_jobs=4):
@@ -108,8 +112,11 @@ class BinanceSimulator:
         return max_qty
 
     def get_last_kline(self, symbol):
-        df = self.data[symbol]
-        return df.iloc[self._step - 1]
+        if symbol in self.data.keys():
+            df = self.data[symbol]
+            return df.iloc[self._step - 1]
+        else:
+            raise Exception(f"{symbol} price is not loaded.")
 
     def get_price(self, base, quote):
         '''Return close price of base w.r.t quote'''
@@ -150,8 +157,8 @@ class BinanceSimulator:
     def create_buy_order(self, symbol, quantity, handle='max'):
         base_asset, quote_asset = self.split_symbol(symbol)
         last_kline = self.get_last_kline(symbol)
-        if self.portfolio.get(quote_asset, 0) >= quantity * last_kline['price_close']:
-            self.portfolio[base_asset] = self.portfolio.get(base_asset, 0) + ((1 - self.fee) * quantity)
+        if self.portfolio[quote_asset] >= quantity * last_kline['price_close']:
+            self.portfolio[base_asset] += ((1 - self.fee) * quantity)
             self.portfolio[quote_asset] -= quantity * last_kline['price_close']
 
             self.trade_hist.loc[len(self.trade_hist)] = \
@@ -160,9 +167,9 @@ class BinanceSimulator:
         else:
             logger.warning(f"step {self._step}: Not enough liquidity to buy {quantity} of {symbol}.")
             if handle == 'max':
-                max_qty = self.portfolio.get(quote_asset, 0) / last_kline['price_close']
+                max_qty = self.portfolio[quote_asset] / last_kline['price_close']
                 if max_qty >= self.get_min_trading_qty(symbol):
-                    self.portfolio[base_asset] = self.portfolio.get(base_asset, 0) + ((1 - self.fee) * max_qty)
+                    self.portfolio[base_asset] += ((1 - self.fee) * max_qty)
                     self.portfolio[quote_asset] = 0
                 
                     self.trade_hist.loc[len(self.trade_hist)] = \
@@ -177,10 +184,9 @@ class BinanceSimulator:
     def create_sell_order(self, symbol, quantity, handle='max'):
         base_asset, quote_asset = self.split_symbol(symbol)
         last_kline = self.get_last_kline(symbol)
-        if self.portfolio.get(base_asset, 0) >= quantity:
+        if self.portfolio[base_asset] >= quantity:
             self.portfolio[base_asset] -= quantity
-            self.portfolio[quote_asset] = self.portfolio.get(quote_asset, 0) + \
-                                             ((1 - self.fee) * quantity) * last_kline['price_close']
+            self.portfolio[quote_asset] += ((1 - self.fee) * quantity) * last_kline['price_close']
 
             self.trade_hist.loc[len(self.trade_hist)] = \
                 [self._step, last_kline['ts_close'], 'sell', symbol, quantity, last_kline['price_close']]
@@ -188,11 +194,10 @@ class BinanceSimulator:
         else:
             logger.warning(f"step {self._step}: Not enough liquidity to sell {quantity} of {symbol}.")
             if handle == 'max':
-                max_qty = self.portfolio.get(base_asset, 0)
+                max_qty = self.portfolio[base_asset]
                 if max_qty >= self.get_min_trading_qty(symbol):
                     self.portfolio[base_asset] = 0
-                    self.portfolio[quote_asset] = self.portfolio.get(quote_asset, 0) + \
-                                                    ((1 - self.fee) * max_qty) * last_kline['price_close']
+                    self.portfolio[quote_asset] += ((1 - self.fee) * max_qty) * last_kline['price_close']
                 
                     self.trade_hist.loc[len(self.trade_hist)] = \
                         [self._step, last_kline['ts_close'], 'sell', symbol, max_qty, last_kline['price_close']]
@@ -238,22 +243,49 @@ class BinanceSimulator:
         self.balance_hist['cum_pnl'] = self.balance_hist['pnl'].cumsum()
         self.balance_hist['cum_pnl_perc'] = 100 * self.balance_hist['cum_pnl'] / self.balance_hist.loc[0, 'balance']
 
-    def render(self):
-        # plot balance hist and pnl hist
-        self.calculate_pnl()
-        fig, axs = plt.subplots(nrows=2, sharex=True)
-        sns.lineplot(data=self.balance_hist, x='step', y='balance', marker='o', ax=axs[0])
-        sns.lineplot(data=self.balance_hist, x='step', y='cum_pnl_perc', marker='o', ax=axs[1])
-
-        axs[0].set_title('Balance')
-        axs[0].set_xlabel('Step')
-        axs[0].set_ylabel(f'Balance {self.unit}')
-
-        axs[1].set_title('PnL')
-        axs[1].set_xlabel('Step')
-        axs[1].set_ylabel('PnL (%)')
-
+    def _render_trades(self):
+        n_symbols = len(self.trade_hist['symbol'].unique())
+        fig, axs = plt.subplots(nrows=n_symbols, sharex=True)
+        if n_symbols == 1:
+            axs = (axs, )
+        for i, (symb, trades) in enumerate(self.trade_hist.groupby('symbol')):
+            sns.lineplot(data=self.data[symb], x='ts_close', y='price_close', ax=axs[i])
+            sns.scatterplot(data=trades, 
+                            x='ts', 
+                            y='price', 
+                            hue='side', 
+                            style='side',
+                            size='quantity',
+                            palette={'sell':(1.0, 0.0, 0.0), 'buy':(0.0, 1.0, 0.0)}, 
+                            markers={'sell':'v', 'buy':'^'}, 
+                            ax=axs[i],
+                            legend='brief')
+            axs[i].set_title(f'{symb}')
+            axs[i].set_xlabel('Timestamp')
+            axs[i].set_ylabel(f'Price {symb}')
         plt.show()
+    
+    def _render_balance(self):
+        fig, ax = plt.subplots()
+        sns.lineplot(data=self.balance_hist, x='step', y='balance', ax=ax)
+        ax.set_title('Balance evolution')
+        ax.set_xlabel('Step')
+        ax.set_ylabel(f'Balance in {self.unit}')
+        plt.show()
+
+    def _render_pnl(self):
+        fig, ax = plt.subplots()
+        self.calculate_pnl()
+        sns.lineplot(data=self.balance_hist, x='step', y='cum_pnl_perc', ax=ax)
+        ax.set_title('PnL evolution')
+        ax.set_xlabel('Step')
+        ax.set_ylabel('PnL (%)')
+        plt.show()
+
+    def render(self):
+        self._render_balance()
+        self._render_pnl()
+        self._render_trades()
         # display trades table and pnl per trade (complicated)
         # report of performances
     

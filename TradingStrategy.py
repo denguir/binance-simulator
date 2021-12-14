@@ -11,10 +11,10 @@ class TradingStrategy:
 
 class BTCHoldStrategy(TradingStrategy):
     
-    def buy(self, data, portfolio):
+    def buy(self, data, portfolio, balance):
         return {'BTCUSDT': 1} 
 
-    def sell(self, data, portfolio):
+    def sell(self, data, portfolio, balance):
         return {}
 
  
