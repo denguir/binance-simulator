@@ -1,0 +1,5 @@
+pandas==1.2.4
+python-binance==1.0.15
+matplotlib==3.5.1
+seaborn==0.11.2
+joblib==1.1.0

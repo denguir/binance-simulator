@@ -3,7 +3,7 @@ import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 from TradingStrategy import TradingStrategy
-from datetime import date, datetime
+from datetime import datetime
 from binance.client import Client
 from joblib import Parallel, delayed, parallel_backend
 
@@ -14,8 +14,8 @@ logger = logging.getLogger(__name__)
 
 
 class BinanceSimulator:
-    """Simulator for Binance trading platform. Useful to apply back-testing
-       on your trading strategies.
+    """Simulator for Binance trading platform. Allow the user to apply back-testing
+       on his trading strategies.
     """
 
     def __init__(self, unit: str='USDT', balance: float=10000) -> None:
@@ -66,7 +66,6 @@ class BinanceSimulator:
         return base_asset, quote_asset
 
     def load_symbol_data(self, symbol:str, date_from:datetime, date_to:datetime, resolution: str='1d'):
-        # add logic to read from or query API
         klines = self._client.get_historical_klines(symbol=symbol, 
                                                     interval=resolution,
                                                     start_str=BinanceSimulator.to_timestamp_ms(date_from),

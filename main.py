@@ -23,6 +23,8 @@ if __name__ == '__main__':
 
     # init strategy
     strategy = HoldStrategy()
+    # run strategy
     bs.run(strategy)
+    # render performance
     bs.render()
     
