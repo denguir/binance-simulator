@@ -3,17 +3,17 @@ Binance simulator is a trading simuation environment built on top of the Binance
 
 ## Installation
 
-```
+```shell
 pip install -r requirements.txt
 ```
 
-```
+```shell
 git clone https://github.com/denguir/binance-simulator
 ```
 
 ## Example
 
-```
+```python
 import time
 from BinanceSimulator import BinanceSimulator
 from TradingStrategy import HoldStrategy
