@@ -3,7 +3,7 @@ import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 from TradingStrategy import TradingStrategy
-from datetime import datetime
+from datetime import date, datetime
 from binance.client import Client
 from joblib import Parallel, delayed, parallel_backend
 
@@ -84,7 +84,7 @@ class BinanceSimulator:
         self.portfolio[quote] = self.portfolio.get(quote, 0)
         self._max_step = max(self._max_step, len(klines))
 
-    def load_data(self, date_from:datetime, date_to:datetime, symbols: list='all', resolution: str='1d', n_jobs=4):
+    def load_data_from_api(self, date_from:datetime, date_to:datetime, symbols: list='all', resolution: str='1d', n_jobs: int=1):
         # make sure to deal with the case where we dont have the same amount of data for the same time window
         # _step should be an index that is the same for every pair of symbols
         with parallel_backend('threading', n_jobs=n_jobs):
@@ -92,6 +92,17 @@ class BinanceSimulator:
                 Parallel()(delayed(self.load_symbol_data)(symb, date_from, date_to, resolution) for symb in symbols)
             else:
                 Parallel()(delayed(self.load_symbol_data)(symb, date_from, date_to, resolution) for symb in self.symbols_info['symbol'])
+
+    def load_data_from_file(self, date_from:datetime, date_to:datetime, filename:str):
+        if filename.endswith('.parquet'):
+            df = pd.read_parquet(filename)
+        else:
+            df = pd.read_csv(filename)
+        
+        df = df[df['open_time'].between(date_from, date_to)]
+        
+        for symbol, df_symbol in df.groupby('symbol'):
+            self._data[symbol] = df_symbol.sort_values('open_time')
 
     def is_tradable(self, symbol):
         symb_info = self.symbols_info[self.symbols_info['symbol'] == symbol].to_dict('list')
