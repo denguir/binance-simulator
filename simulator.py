@@ -326,11 +326,3 @@ class BinanceSimulator:
         self._render_trades()
         # display trades table and pnl per trade (complicated)
         # report of performances
-    
-
-            
-
-
-
-
-    
