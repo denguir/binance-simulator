@@ -1,6 +1,6 @@
 import time
-from BinanceSimulator import BinanceSimulator
-from TradingStrategy import HoldStrategy
+from simulator import BinanceSimulator
+from strategy import HoldStrategy
 from datetime import datetime
 
 

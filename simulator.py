@@ -1,10 +1,12 @@
 import logging
+from importlib_metadata import re
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
-from TradingStrategy import TradingStrategy
+from strategy import TradingStrategy
 from datetime import datetime
 from binance.client import Client
+from order import Order, OrderType, OrderPrice
 from joblib import Parallel, delayed, parallel_backend
 
 
@@ -27,23 +29,32 @@ class BinanceSimulator:
         self._client = Client(None, None)
         self.symbols_info = self.get_symbols_info()
         self._step = 0
-        self._max_step = 0
 
         self._data = {}
+    
+    def init_stats(self, date_from: datetime, resolution: str='1d'):
+        self._max_step = max([len(kline) for kline in self._data.values()])
+        self._time_step = pd.Timedelta(resolution)
+        self._time = date_from
+
         self.portfolio_hist = {self._step : self.portfolio}
-        self.balance_hist = pd.DataFrame(data=[[self._step, self.balance]],
-                                         columns=['step', 'balance'])
+        self.balance_hist = pd.DataFrame(data=[[self._step, self._time, self.balance]],
+                                         columns=['step', 'date', 'balance'])
         self.trade_hist = pd.DataFrame(
             columns=['step', 'ts', 'side', 'symbol', 'quantity', 'price'])
+        
+        self.orders = []
+        self.position_hist = pd.DataFrame(
+            columns=['symbol', 'quantity', 'ts_open', 'price_open', 'ts_close', 'price_close', 'pnl', 'pnl_rel', 'closed']
+        )
 
     @property
     def data(self):
         return {symb : df[:self._step] for symb, df in self._data.items()}
 
     @property
-    def fee(self):
-        # VIP 0 fees (taker/maker) with BNB discount allowed
-        return 0.000750
+    def index(self):
+        return self._step - 1
 
     @staticmethod
     def to_timestamp_ms(dt):
@@ -51,7 +62,7 @@ class BinanceSimulator:
         return ts
 
     @staticmethod
-    def from_timestamp_ms(ts):
+    def to_datetime(ts):
         dt = datetime.fromtimestamp(ts // 1000)
         return dt
 
@@ -70,6 +81,7 @@ class BinanceSimulator:
                                                     interval=resolution,
                                                     start_str=BinanceSimulator.to_timestamp_ms(date_from),
                                                     end_str=BinanceSimulator.to_timestamp_ms(date_to))
+
         self._data[symbol] = pd.DataFrame(data=klines,
                                           columns=[
                                             'ts_open', 'price_open', 'price_high', 'price_low', 
@@ -81,16 +93,19 @@ class BinanceSimulator:
         base, quote = self.split_symbol(symbol)
         self.portfolio[base] = self.portfolio.get(base, 0)
         self.portfolio[quote] = self.portfolio.get(quote, 0)
-        self._max_step = max(self._max_step, len(klines))
 
     def load_data_from_api(self, date_from:datetime, date_to:datetime, symbols: list='all', resolution: str='1d', n_jobs: int=1):
         # make sure to deal with the case where we dont have the same amount of data for the same time window
         # _step should be an index that is the same for every pair of symbols
         with parallel_backend('threading', n_jobs=n_jobs):
             if type(symbols) is list:
-                Parallel()(delayed(self.load_symbol_data)(symb, date_from, date_to, resolution) for symb in symbols)
+                Parallel()(delayed(self.load_symbol_data)(symb, date_from, date_to, resolution) 
+                        for symb in symbols)
             else:
-                Parallel()(delayed(self.load_symbol_data)(symb, date_from, date_to, resolution) for symb in self.symbols_info['symbol'])
+                Parallel()(delayed(self.load_symbol_data)(symb, date_from, date_to, resolution) 
+                        for symb in self.symbols_info['symbol'])
+        
+        self.init_stats(date_from, resolution)
 
     def load_data_from_file(self, date_from:datetime, date_to:datetime, filename:str):
         if filename.endswith('.parquet'):
@@ -164,75 +179,86 @@ class BinanceSimulator:
             balance += (price * qty)
         self.balance = balance
 
-    def create_buy_order(self, symbol, quantity, handle='max'):
-        base_asset, quote_asset = self.split_symbol(symbol)
-        last_kline = self.get_last_kline(symbol)
-        if self.portfolio[quote_asset] >= quantity * last_kline['price_close']:
-            self.portfolio[base_asset] += ((1 - self.fee) * quantity)
-            self.portfolio[quote_asset] -= quantity * last_kline['price_close']
+    def get_order_price(self, kline, order:Order):
+        if order.price == OrderPrice.Open:
+            price = kline['price_open']
+        elif order.price == OrderPrice.Close:
+            price = kline['price_close']
+        elif order.price == OrderPrice.High:
+            price = kline['price_high']
+        elif order.price == OrderPrice.Low:
+            price = kline['price_low']
+        elif order.price == OrderPrice.Mean:
+            price = (kline['price_low'] + kline['price_high']) / 2
+        return price
 
-            self.trade_hist.loc[len(self.trade_hist)] = \
-                [self._step, last_kline['ts_close'], 'buy', symbol, quantity, last_kline['price_close']]
+    def fill_order(self, order: Order, handle=True):
+        base_asset, quote_asset = self.split_symbol(order.symbol)
+        last_kline = self.get_last_kline(order.symbol)
+        price = self.get_order_price(last_kline, order)
+        quantity = order.quantity
 
-        else:
-            logger.warning(f"step {self._step}: Not enough liquidity to buy {quantity} of {symbol}.")
-            if handle == 'max':
-                max_qty = self.portfolio[quote_asset] / last_kline['price_close']
-                if max_qty >= self.get_min_trading_qty(symbol):
-                    self.portfolio[base_asset] += ((1 - self.fee) * max_qty)
+        if order.side == OrderType.Buy:
+            if self.portfolio[quote_asset] >= quantity * price:
+                self.portfolio[base_asset] += ((1 - order.fee) * quantity)
+                self.portfolio[quote_asset] -= quantity * price
+            else:
+                logger.warning(
+                    f"step {self._step}: Not enough liquidity to buy {quantity} of {order.symbol}.")
+                max_qty = self.portfolio[quote_asset] / price
+                if handle and max_qty >= self.get_min_trading_qty(order.symbol):
+                    self.portfolio[base_asset] += ((1 - order.fee) * max_qty)
                     self.portfolio[quote_asset] = 0
-                
-                    self.trade_hist.loc[len(self.trade_hist)] = \
-                        [self._step, last_kline['ts_close'], 'buy', symbol, max_qty, last_kline['price_close']]
-
-                    logger.warning(f"step {self._step}: Bought {max_qty} of {symbol}.")
+                    quantity = max_qty
+                    logger.warning(f"step {self._step}: Bought {quantity} of {order.symbol}.")
                 else:
+                    quantity = 0
                     logger.warning(f"step {self._step}: Ignoring buy order.")
-            elif handle == 'ignore':
-                logger.warning(f"step {self._step}: Ignoring buy order.")
-
-    def create_sell_order(self, symbol, quantity, handle='max'):
-        base_asset, quote_asset = self.split_symbol(symbol)
-        last_kline = self.get_last_kline(symbol)
-        if self.portfolio[base_asset] >= quantity:
-            self.portfolio[base_asset] -= quantity
-            self.portfolio[quote_asset] += ((1 - self.fee) * quantity) * last_kline['price_close']
-
-            self.trade_hist.loc[len(self.trade_hist)] = \
-                [self._step, last_kline['ts_close'], 'sell', symbol, quantity, last_kline['price_close']]
-
-        else:
-            logger.warning(f"step {self._step}: Not enough liquidity to sell {quantity} of {symbol}.")
-            if handle == 'max':
+            
+            # open position
+        
+        elif order.side == OrderType.Sell:
+            if self.portfolio[base_asset] >= quantity:
+                self.portfolio[base_asset] -= quantity
+                self.portfolio[quote_asset] += ((1 - order.fee) * quantity) * price
+            else:
+                logger.warning(
+                    f"step {self._step}: Not enough liquidity to sell {quantity} of {order.symbol}.")
                 max_qty = self.portfolio[base_asset]
-                if max_qty >= self.get_min_trading_qty(symbol):
+                if handle and max_qty >= self.get_min_trading_qty(order.symbol):
                     self.portfolio[base_asset] = 0
-                    self.portfolio[quote_asset] += ((1 - self.fee) * max_qty) * last_kline['price_close']
-                
-                    self.trade_hist.loc[len(self.trade_hist)] = \
-                        [self._step, last_kline['ts_close'], 'sell', symbol, max_qty, last_kline['price_close']]
-
-                    logger.warning(f"step {self._step}: Sold {max_qty} of {symbol}.")
+                    self.portfolio[quote_asset] += ((1 - order.fee) * max_qty) * price
+                    quantity = max_qty
+                    logger.warning(f"step {self._step}: Sold {quantity} of {order.symbol}.")
                 else:
+                    quantity = 0
                     logger.warning(f"step {self._step}: Ignoring sell order.")
-            elif handle == 'ignore':
-                logger.warning(f"step {self._step}: Ignoring sell order.")
+            
+            # close position or update open position status
+            # logic: 
+            # create a column amount_filled and deduce this value until it reaches 0
+            # if it reaches 0, we close the position
+        if quantity:
+            self.trade_hist.loc[len(self.trade_hist)] = \
+                [self._step, self._time, order.side.value, order.symbol, quantity, price]
 
-    def tick(self, strategy:TradingStrategy, step:int=1):
+    def order(self, strategy:TradingStrategy):
         if strategy:
-            sell_orders = strategy.sell(self.data, self.portfolio, self.balance)
-            for symb, qty in sell_orders.items():
-                self.create_sell_order(symb, qty)
-
-            buy_orders = strategy.buy(self.data, self.portfolio, self.balance)
-            for symb, qty in buy_orders.items():
-                self.create_buy_order(symb, qty)
+            new_orders = strategy.order()
+            self.orders += new_orders
         else:
             print(f'Step {self._step}')
 
+    def tick(self, strategy:TradingStrategy, step:int=1):
+        while len(self.orders):
+            next_order = self.orders.pop(0)
+            self.fill_order(next_order)
+
+        self.order(strategy)
         self._step += step
+        self._time += (step * self._time_step)
         self.update_balance()
-        self.balance_hist.loc[self._step] = [self._step, self.balance]
+        self.balance_hist.loc[self._step] = [self._step, self._time, self.balance]
         self.portfolio_hist[self._step] = self.portfolio
 
     def run(self, strategy:TradingStrategy, step:int=1, offset:int=100, verbose=0):
@@ -242,6 +268,7 @@ class BinanceSimulator:
             i += step
         while i < self._max_step:
             self.tick(strategy, step)
+            strategy._update(self.data, self.portfolio, self.balance, self.unit)
             i += step
             print(self.balance)
             print(self.portfolio)
@@ -259,13 +286,14 @@ class BinanceSimulator:
         if n_symbols == 1:
             axs = (axs, )
         for i, (symb, trades) in enumerate(self.trade_hist.groupby('symbol')):
-            sns.lineplot(data=self.data[symb], x='ts_close', y='price_close', ax=axs[i])
-            sns.scatterplot(data=trades, 
+            symb_data = self.data[symb]
+            symb_data['date'] = symb_data['ts_open'].apply(lambda ts: self.to_datetime(ts))
+            sns.lineplot(data=symb_data, x='date', y='price_close', ax=axs[i])
+            sns.scatterplot(data=trades,
                             x='ts', 
                             y='price', 
                             hue='side', 
                             style='side',
-                            size='quantity',
                             palette={'sell':(1.0, 0.0, 0.0), 'buy':(0.0, 1.0, 0.0)}, 
                             markers={'sell':'v', 'buy':'^'}, 
                             ax=axs[i],
