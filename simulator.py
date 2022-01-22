@@ -1,6 +1,7 @@
 import logging
-from importlib_metadata import re
+import numpy as np
 import pandas as pd
+from pyrsistent import v
 import seaborn as sns
 import matplotlib.pyplot as plt
 from strategy import TradingStrategy
@@ -45,7 +46,8 @@ class BinanceSimulator:
         
         self.orders = []
         self.position_hist = pd.DataFrame(
-            columns=['symbol', 'quantity', 'ts_open', 'price_open', 'ts_close', 'price_close', 'pnl', 'pnl_rel', 'closed']
+            columns=['symbol', 'date_open', 'price_open', 'date_close', 'price_close', 
+                     'quantity', 'closed_quantity', 'pnl', 'pnl_rel', 'close_hist', 'closed']
         )
 
     @property
@@ -179,7 +181,50 @@ class BinanceSimulator:
             balance += (price * qty)
         self.balance = balance
 
-    def get_order_price(self, kline, order:Order):
+    def open_position(self, symbol, quantity, price):
+        ['symbol', 'date_open', 'price_open', 'date_close', 'price_close', 
+                     'quantity', 'closed_quantity', 'pnl', 'pnl_rel', 'close_hist', 'closed']
+        self.position_hist.loc[len(self.position_hist)] = \
+                [symbol, self._time, price, np.nan, np.nan, quantity, 0, np.nan, np.nan, [], False]
+
+    def close_position(self, symbol, quantity, price):
+        qty_to_close = quantity
+        while qty_to_close:
+            open_position = self.position_hist[
+                (self.position_hist['symbol'] == symbol) & (self.position_hist['closed'] == False)]\
+                    .nsmallest(1, 'date_open')
+            if open_position.empty:
+                break
+
+            closed_qty = min(qty_to_close, open_position['quantity'].item() - open_position['closed_quantity'].item())
+            tot_closed_qty = open_position['closed_quantity'].item() + closed_qty
+            closed_ratio = closed_qty / open_position['quantity'].item()
+            close_hist = open_position['close_hist'].item() + [(closed_ratio, price)]
+
+            self.position_hist.loc[open_position.index, 'closed_quantity'] = tot_closed_qty
+            self.position_hist.at[open_position.index[0], 'close_hist'] = close_hist
+
+            if open_position['quantity'].item() == tot_closed_qty:
+                self.position_hist.loc[open_position.index, 'closed'] = True
+                self.position_hist.loc[open_position.index, 'date_close'] = self._time
+            else:
+                base, quote = self.split_symbol(symbol)
+                delta_qty = open_position['quantity'].item() - tot_closed_qty
+                qty_ratio = delta_qty / open_position['quantity'].item()
+                close_hist = close_hist + [(qty_ratio, self.get_price(base, quote))]
+            
+            price_close = sum(x[0] * x[1] for x in close_hist)
+            unit_pnl = price_close - open_position['price_open'].item()
+            pnl = open_position['quantity'].item() * unit_pnl
+            pnl_rel = unit_pnl / open_position['price_open'].item()
+
+            self.position_hist.loc[open_position.index, 'price_close'] = price_close
+            self.position_hist.loc[open_position.index, 'pnl'] = pnl
+            self.position_hist.loc[open_position.index, 'pnl_rel'] = pnl_rel
+
+            qty_to_close -= closed_qty
+
+    def get_order_price(self, kline, order: Order):
         if order.price == OrderPrice.Open:
             price = kline['price_open']
         elif order.price == OrderPrice.Close:
@@ -214,8 +259,6 @@ class BinanceSimulator:
                 else:
                     quantity = 0
                     logger.warning(f"step {self._step}: Ignoring buy order.")
-            
-            # open position
         
         elif order.side == OrderType.Sell:
             if self.portfolio[base_asset] >= quantity:
@@ -234,13 +277,14 @@ class BinanceSimulator:
                     quantity = 0
                     logger.warning(f"step {self._step}: Ignoring sell order.")
             
-            # close position or update open position status
-            # logic: 
-            # create a column amount_filled and deduce this value until it reaches 0
-            # if it reaches 0, we close the position
         if quantity:
             self.trade_hist.loc[len(self.trade_hist)] = \
                 [self._step, self._time, order.side.value, order.symbol, quantity, price]
+            
+            if order.side == OrderType.Buy:
+                self.open_position(order.symbol, quantity, price)
+            elif order.side == OrderType.Sell:
+                self.close_position(order.symbol, quantity, price)
 
     def order(self, strategy:TradingStrategy):
         if strategy:
@@ -268,7 +312,11 @@ class BinanceSimulator:
             i += step
         while i < self._max_step:
             self.tick(strategy, step)
-            strategy._update(self.data, self.portfolio, self.balance, self.unit)
+            strategy._update(self._step, 
+                             self.data, 
+                             self.portfolio, 
+                             self.balance, 
+                             self.unit)
             i += step
             print(self.balance)
             print(self.portfolio)

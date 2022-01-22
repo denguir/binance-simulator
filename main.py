@@ -1,6 +1,6 @@
 import time
 from simulator import BinanceSimulator
-from strategy import HoldStrategy
+from strategy import HoldStrategy, BuySellStrategy
 from datetime import datetime
 
 
@@ -22,9 +22,10 @@ if __name__ == '__main__':
     print(f'time to load: {t1 - t0} seconds.')
 
     # init strategy
-    strategy = HoldStrategy()
+    strategy = BuySellStrategy()
     # run strategy
     bs.run(strategy)
     # render performance
     bs.render()
+    print(bs.position_hist)
     

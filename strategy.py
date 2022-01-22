@@ -9,13 +9,14 @@ class TradingStrategy(ABC):
         - a buy method, that is executed at each time step of the simuation.
         - a sell method, that is executed at each time step of the simuation.
     """
-
+    step: int = 0
     data: dict = field(default_factory=dict)
     portfolio: dict = field(default_factory=dict)
     balance: float = 0.0
     unit: str = ''
 
-    def _update(self, data, portfolio, balance, unit):
+    def _update(self, step, data, portfolio, balance, unit):
+        self.step = step
         self.data.update(data)
         self.portfolio.update(portfolio)
         self.balance = balance
@@ -24,28 +25,6 @@ class TradingStrategy(ABC):
     @abstractmethod
     def order(self):
         raise NotImplementedError("A list of orders must be provided")
-
-    @abstractmethod
-    def buy(self):
-        """inputs:
-            - data: {symbol: dataframe of OHCLV for interval [0:t] of the simulation}.
-            - portfolio: {asset: amount}. Portfolio state at time t.
-            - balance: portfolio value in the unit chosen in the binance simulator.
-           outputs:
-            - {symbol: amount}. The symbol to buy with the quantity for next time step.
-        """
-        raise NotImplementedError("A buy strategy is needed.")
-
-    @abstractmethod
-    def sell(self):
-        """inputs:
-            - data: {symbol: dataframe of OHCLV for interval [0:t] of the simulation}.
-            - portfolio: {asset: amount}. Portfolio state at time t.
-            - balance: portfolio value in the unit chosen in the binance simulator.
-           outputs:
-            - {symbol: amount}. The symbol to sell with the quantity for next time step.
-        """
-        raise NotImplementedError("A sell strategy is needed.")
 
 
 class HoldStrategy(TradingStrategy):
@@ -57,11 +36,24 @@ class HoldStrategy(TradingStrategy):
         return [Order(side=OrderType.Buy,
                       price=OrderPrice.Open,
                       symbol='BTCUSDT',
-                      quantity=1
+                      quantity=0.1
                       )]
 
-    def buy(self):
-        return {'BTCUSDT': 0.1}
 
-    def sell(self):
-        return {}
+class BuySellStrategy(TradingStrategy):
+    """Buy and sell iteratively the same amount of BTC
+    """
+
+    def order(self):
+        if self.step % 2 == 0:
+            side = OrderType.Buy
+            qty = 1
+        else:
+            side = OrderType.Sell
+            qty = 0.5
+
+        return [Order(side=side,
+                      price=OrderPrice.Open,
+                      symbol='BTCUSDT',
+                      quantity=qty
+                      )]
