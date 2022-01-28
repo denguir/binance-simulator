@@ -8,7 +8,6 @@ import matplotlib.pyplot as plt
 from dash import dash_table
 from dash import dcc
 from dash import html
-from dash.dependencies import Input, Output
 from strategy import TradingStrategy
 from datetime import datetime
 from binance.client import Client
