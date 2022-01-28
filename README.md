@@ -15,9 +15,13 @@ git clone https://github.com/denguir/binance-simulator
 
 ```python
 import time
-from BinanceSimulator import BinanceSimulator
-from TradingStrategy import HoldStrategy
+import dash
+from simulator import BinanceSimulator
+from strategy import BuySellStrategy, HoldStrategy
 from datetime import datetime
+
+
+app = dash.Dash(__name__)
 
 bs = BinanceSimulator(
     unit='USDT',
@@ -28,10 +32,10 @@ symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'QTUMUSDT']
 
 # load data
 t0 = time.time()
-bs.load_data_from_api(date_from=datetime(2020, 1, 1), 
-                      date_to=datetime(2021, 11, 30),
-                      symbols=symbols,
-                      n_jobs=4)
+bs.load_data_from_api(date_from=datetime(2020, 1, 1),
+                        date_to=datetime(2021, 11, 30),
+                        symbols=symbols,
+                        n_jobs=4)
 t1 = time.time()
 print(f'time to load: {t1 - t0} seconds.')
 
@@ -40,5 +44,9 @@ strategy = HoldStrategy()
 # run strategy
 bs.run(strategy)
 # render performance
-bs.render()
+bs.render(app)
+
+
+if __name__ == '__main__':
+    app.run_server(debug=False)
 ```

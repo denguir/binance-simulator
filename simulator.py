@@ -1,9 +1,14 @@
 import logging
 import numpy as np
 import pandas as pd
-from pyrsistent import v
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import seaborn as sns
 import matplotlib.pyplot as plt
+from dash import dash_table
+from dash import dcc
+from dash import html
+from dash.dependencies import Input, Output
 from strategy import TradingStrategy
 from datetime import datetime
 from binance.client import Client
@@ -99,13 +104,14 @@ class BinanceSimulator:
     def load_data_from_api(self, date_from:datetime, date_to:datetime, symbols: list='all', resolution: str='1d', n_jobs: int=1):
         # make sure to deal with the case where we dont have the same amount of data for the same time window
         # _step should be an index that is the same for every pair of symbols
+        if type(symbols) is list:
+            self.symbols = symbols
+        else:
+            self.symbols = self.symbols_info['symbol']
+
         with parallel_backend('threading', n_jobs=n_jobs):
-            if type(symbols) is list:
-                Parallel()(delayed(self.load_symbol_data)(symb, date_from, date_to, resolution) 
-                        for symb in symbols)
-            else:
-                Parallel()(delayed(self.load_symbol_data)(symb, date_from, date_to, resolution) 
-                        for symb in self.symbols_info['symbol'])
+            Parallel()(delayed(self.load_symbol_data)(symb, date_from, date_to, resolution) 
+                    for symb in self.symbols)
         
         self.init_stats(date_from, resolution)
 
@@ -170,7 +176,7 @@ class BinanceSimulator:
                             quote_price = self.get_price(alt_quote, quote)
                             price = alt_price * quote_price
                             break
-                    print(f"base {base} seems to have no exchange with one of the supported quotes {self._quotes}.")
+                    logging.warning(f"base {base} seems to have no exchange with one of the supported quotes {self._quotes}.")
                     price = 0.0
         return price
 
@@ -291,7 +297,7 @@ class BinanceSimulator:
             new_orders = strategy.order()
             self.orders += new_orders
         else:
-            print(f'Step {self._step}')
+            logging.info(f'No orders @ step {self._step}')
 
     def tick(self, strategy:TradingStrategy, step:int=1):
         while len(self.orders):
@@ -307,6 +313,7 @@ class BinanceSimulator:
 
     def run(self, strategy:TradingStrategy, step:int=1, offset:int=100, verbose=0):
         i = 0
+        self.strategy = strategy
         while i < offset:
             self.tick(None, step)
             i += step
@@ -318,9 +325,7 @@ class BinanceSimulator:
                              self.balance, 
                              self.unit)
             i += step
-            print(self.balance)
-            print(self.portfolio)
-        print("End of simuation!")
+        logger.info("End of simuation!")
 
     def calculate_pnl(self):
         self.balance_hist['prev_balance'] = self.balance_hist['balance'].shift(1)
@@ -351,26 +356,57 @@ class BinanceSimulator:
             axs[i].set_ylabel(f'Price {symb}')
         plt.show()
     
-    def _render_balance(self):
-        fig, ax = plt.subplots()
-        sns.lineplot(data=self.balance_hist, x='step', y='balance', ax=ax)
-        ax.set_title('Balance evolution')
-        ax.set_xlabel('Step')
-        ax.set_ylabel(f'Balance in {self.unit}')
-        plt.show()
-
     def _render_pnl(self):
-        fig, ax = plt.subplots()
         self.calculate_pnl()
-        sns.lineplot(data=self.balance_hist, x='step', y='cum_pnl_perc', ax=ax)
-        ax.set_title('PnL evolution')
-        ax.set_xlabel('Step')
-        ax.set_ylabel('PnL (%)')
-        plt.show()
 
-    def render(self):
-        self._render_balance()
-        self._render_pnl()
-        self._render_trades()
-        # display trades table and pnl per trade (complicated)
-        # report of performances
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+        fig.add_trace(
+            go.Scatter(x=self.balance_hist['date'], y=self.balance_hist['balance'], name="balance"),
+            secondary_y=False,
+        )
+        fig.add_trace(
+            go.Scatter(x=self.balance_hist['date'], y=self.balance_hist['cum_pnl_perc'], name="cumulative pnl"),
+            secondary_y=True,
+        )
+        fig.update_layout(
+            title_text=f"Balance & PnL ({self.unit})"
+        )
+
+        fig.update_xaxes(title_text="date")
+        fig.update_yaxes(title_text=f"<b>Balance ({self.unit})</b>", secondary_y=False)
+        fig.update_yaxes(title_text="<b>PnL (%)</b>", secondary_y=True)
+
+        return fig
+
+    def _render_positions(self):
+        positions = self.position_hist.drop(columns=['close_hist'])
+        positions['price_open'] = positions['price_open'].map('{:,.2f}'.format)
+        positions['price_close'] = positions['price_close'].map('{:,.2f}'.format)
+        positions['quantity'] = positions['quantity'].map('{:,.2f}'.format)
+        positions['closed_quantity'] = positions['closed_quantity'].map('{:,.2f}'.format)
+        positions['pnl'] = positions['pnl'].map('{:,.2f}'.format)
+        positions['pnl_rel'] = positions['pnl_rel'].map('{:,.2f}%'.format)
+        return positions.sort_values(by='date_open', ascending=False)
+
+    def render(self, app):
+        pnl = self._render_pnl()
+        positions = self._render_positions()
+        #trades = self._render_trades()
+        app.layout = html.Div(children=[
+                        html.H1(f'Simulation report of strategy {str(self.strategy)}'),
+
+                        html.H2(f'Strategy performance'),
+                        dcc.Graph(
+                            id='pnl',
+                            figure=pnl
+                        ),
+
+                        html.H2(f'Position history'),
+                        dash_table.DataTable(
+                                id='positions', 
+                                data=positions.to_dict('records'),
+                                columns=[{"name": i, "id": i} for i in positions.columns],
+                                page_size=20
+                            )
+                    ])

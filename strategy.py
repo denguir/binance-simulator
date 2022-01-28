@@ -31,6 +31,10 @@ class HoldStrategy(TradingStrategy):
     """Hold strategy that consists of buying 0.1 BTC at each time step,
        until USDT balance is empty. It never sells the BTC.
     """
+    
+    def __str__(self) -> str:
+        return "HoldStrategy"
+
 
     def order(self):
         return [Order(side=OrderType.Buy,
@@ -43,6 +47,9 @@ class HoldStrategy(TradingStrategy):
 class BuySellStrategy(TradingStrategy):
     """Buy and sell iteratively the same amount of BTC
     """
+
+    def __str__(self) -> str:
+        return "BuySellStrategy"
 
     def order(self):
         if self.step % 2 == 0:
