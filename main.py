@@ -18,8 +18,7 @@ symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'QTUMUSDT']
 t0 = time.time()
 bs.load_data_from_api(date_from=datetime(2020, 1, 1),
                         date_to=datetime(2021, 11, 30),
-                        symbols=symbols,
-                        n_jobs=4)
+                        symbols=symbols)
 t1 = time.time()
 print(f'time to load: {t1 - t0} seconds.')
 

@@ -2,9 +2,10 @@ import logging
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import seaborn as sns
 import matplotlib.pyplot as plt
+from tqdm import tqdm
+from plotly.subplots import make_subplots
 from dash import dash_table
 from dash import dcc
 from dash import html
@@ -15,7 +16,7 @@ from order import Order, OrderType, OrderPrice
 from joblib import Memory, Parallel, delayed, parallel_backend
 
 
-logging.basicConfig(level=logging.ERROR, 
+logging.basicConfig(level=logging.INFO, 
                    format='%(asctime)s :: %(levelname)s :: %(name)s :: %(funcName)s :: %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -109,19 +110,25 @@ class BinanceSimulator:
         self.portfolio[base] = self.portfolio.get(base, 0)
         self.portfolio[quote] = self.portfolio.get(quote, 0)
 
-    def load_data_from_api(self, date_from:datetime, date_to:datetime, symbols: list='all', resolution: str='1d', n_jobs: int=1):
+    def load_data_from_api(self, date_from:datetime, date_to:datetime, symbols: list='all', resolution: str='1d'):
         # make sure to deal with the case where we dont have the same amount of data for the same time window
         # _step should be an index that is the same for every pair of symbols
         if type(symbols) is list:
             self.symbols = symbols
         else:
             self.symbols = self.symbols_info['symbol']
+        
+        n_jobs = 4 # setting it too high will induce API ban
+        batches = [self.symbols[i:i+n_jobs] for i in range(0, len(self.symbols), n_jobs)]
 
+        print('Loading data from Binance API ...')
         with parallel_backend('threading', n_jobs=n_jobs):
-            Parallel()(delayed(self.load_symbol_data)(symb, date_from, date_to, resolution) 
-                    for symb in self.symbols)
+            for batch in tqdm(batches):
+                Parallel()(delayed(self.load_symbol_data)(symb, date_from, date_to, resolution) 
+                        for symb in batch)
         
         self.init_stats(date_from, resolution)
+        print('Loading finished.')
 
     def load_data_from_file(self, date_from:datetime, date_to:datetime, filename:str):
         if filename.endswith('.parquet'):
