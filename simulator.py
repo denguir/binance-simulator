@@ -12,12 +12,15 @@ from strategy import TradingStrategy
 from datetime import datetime
 from binance.client import Client
 from order import Order, OrderType, OrderPrice
-from joblib import Parallel, delayed, parallel_backend
+from joblib import Memory, Parallel, delayed, parallel_backend
 
 
-logging.basicConfig(level=logging.INFO, 
+logging.basicConfig(level=logging.ERROR, 
                    format='%(asctime)s :: %(levelname)s :: %(name)s :: %(funcName)s :: %(message)s')
 logger = logging.getLogger(__name__)
+
+cachedir = 'data/cache'
+memory = Memory(cachedir, verbose=0)
 
 
 class BinanceSimulator:
@@ -36,6 +39,9 @@ class BinanceSimulator:
         self._step = 0
 
         self._data = {}
+
+        # cached methods
+        self.get_symbol_data = memory.cache(self.get_symbol_data, ignore=['self'])
     
     def init_stats(self, date_from: datetime, resolution: str='1d'):
         self._max_step = max([len(kline) for kline in self._data.values()])
@@ -82,12 +88,15 @@ class BinanceSimulator:
         quote_asset = symb_info['quoteAsset'][0]
         return base_asset, quote_asset
 
-    def load_symbol_data(self, symbol:str, date_from:datetime, date_to:datetime, resolution: str='1d'):
+    def get_symbol_data(self, symbol:str, date_from:datetime, date_to:datetime, resolution: str='1d'):
         klines = self._client.get_historical_klines(symbol=symbol, 
                                                     interval=resolution,
                                                     start_str=BinanceSimulator.to_timestamp_ms(date_from),
                                                     end_str=BinanceSimulator.to_timestamp_ms(date_to))
+        return klines
 
+    def load_symbol_data(self, symbol:str, date_from:datetime, date_to:datetime, resolution: str='1d'):
+        klines = self.get_symbol_data(symbol, date_from, date_to, resolution)
         self._data[symbol] = pd.DataFrame(data=klines,
                                           columns=[
                                             'ts_open', 'price_open', 'price_high', 'price_low', 
