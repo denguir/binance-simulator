@@ -1,7 +1,7 @@
 import time
 import dash
 from simulator import BinanceSimulator
-from strategy import BuySellStrategy, HoldStrategy
+from strategy import BuySellStrategy, HoldStrategy, MACDStrategy
 from datetime import datetime
 
 
@@ -23,7 +23,7 @@ t1 = time.time()
 print(f'time to load: {t1 - t0} seconds.')
 
 # init strategy
-strategy = HoldStrategy()
+strategy = MACDStrategy()
 # run strategy
 bs.run(strategy)
 # render performance

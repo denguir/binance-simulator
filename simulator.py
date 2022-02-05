@@ -62,12 +62,16 @@ class BinanceSimulator:
         )
 
     @property
+    def index(self):
+        return self._step - 1
+
+    @property
     def data(self):
         return {symb : df[:self._step] for symb, df in self._data.items()}
 
     @property
-    def index(self):
-        return self._step - 1
+    def kline(self):
+        return {symb : df.iloc[self.index:self._step] for symb, df in self._data.items()}
 
     @staticmethod
     def to_timestamp_ms(dt):
@@ -118,7 +122,7 @@ class BinanceSimulator:
         else:
             self.symbols = self.symbols_info['symbol']
         
-        n_jobs = 4 # setting it too high will induce API ban
+        n_jobs = 4 # setting it too high will result in API ban
         batches = [self.symbols[i:i+n_jobs] for i in range(0, len(self.symbols), n_jobs)]
 
         print('Loading data from Binance API ...')
@@ -159,13 +163,6 @@ class BinanceSimulator:
         max_qty = float(symb_info['filters'][0][2]['maxQty'])
         return max_qty
 
-    def get_last_kline(self, symbol):
-        if symbol in self.data.keys():
-            df = self.data[symbol]
-            return df.iloc[self._step - 1]
-        else:
-            raise Exception(f"{symbol} price is not loaded.")
-
     def get_price(self, base, quote):
         '''Return close price of base w.r.t quote'''
         assert quote in self._quotes, f"{quote} not supported as an exchange quote."
@@ -174,20 +171,20 @@ class BinanceSimulator:
         else:
             symbol = base + quote
             if self.is_tradable(symbol):
-                res = self.get_last_kline(symbol)
-                price = res['price_close']
+                res = self.kline[symbol]
+                price = res['price_close'].item()
             else:
                 symbol = quote + base
                 if self.is_tradable(symbol):
-                    res = self.get_last_kline(symbol)
-                    price = 1.0 / res['price_close']
+                    res = self.kline[symbol]
+                    price = 1.0 / res['price_close'].item()
                 else:
                     alt_symbols = [base + alt_quote for alt_quote in self._quotes]
                     for alt_symb in alt_symbols:
                         if self.is_tradable(alt_symb):
                             _, alt_quote = self.split_symbol(alt_symb)
-                            alt_kline = self.get_last_kline(alt_symb)
-                            alt_price = alt_kline['price_close']
+                            alt_kline = self.kline[alt_symb]
+                            alt_price = alt_kline['price_close'].item()
                             quote_price = self.get_price(alt_quote, quote)
                             price = alt_price * quote_price
                             break
@@ -247,20 +244,20 @@ class BinanceSimulator:
 
     def get_order_price(self, kline, order: Order):
         if order.price == OrderPrice.Open:
-            price = kline['price_open']
+            price = kline['price_open'].item()
         elif order.price == OrderPrice.Close:
-            price = kline['price_close']
+            price = kline['price_close'].item()
         elif order.price == OrderPrice.High:
-            price = kline['price_high']
+            price = kline['price_high'].item()
         elif order.price == OrderPrice.Low:
-            price = kline['price_low']
+            price = kline['price_low'].item()
         elif order.price == OrderPrice.Mean:
-            price = (kline['price_low'] + kline['price_high']) / 2
+            price = (kline['price_low'].item() + kline['price_high'].item()) / 2
         return price
 
     def fill_order(self, order: Order, handle=True):
         base_asset, quote_asset = self.split_symbol(order.symbol)
-        last_kline = self.get_last_kline(order.symbol)
+        last_kline = self.kline[order.symbol]
         price = self.get_order_price(last_kline, order)
         quantity = order.quantity
 
@@ -326,20 +323,22 @@ class BinanceSimulator:
         self.balance_hist.loc[self._step] = [self._step, self._time, self.balance]
         self.portfolio_hist[self._step] = self.portfolio
 
-    def run(self, strategy:TradingStrategy, step:int=1, offset:int=100, verbose=0):
+        if strategy:
+            strategy._update(self._step, 
+                            self.kline, 
+                            self.portfolio, 
+                            self.balance, 
+                            self.unit)
+
+    def run(self, strategy:TradingStrategy, step:int=1, verbose=0):
         i = 0
         self.strategy = strategy
-        while i < offset:
-            self.tick(None, step)
-            i += step
+
         while i < self._max_step:
             self.tick(strategy, step)
-            strategy._update(self._step, 
-                             self.data, 
-                             self.portfolio, 
-                             self.balance, 
-                             self.unit)
             i += step
+
+        # close all open positions
         logger.info("End of simuation!")
 
     def calculate_pnl(self):
@@ -370,7 +369,38 @@ class BinanceSimulator:
             axs[i].set_xlabel('Timestamp')
             axs[i].set_ylabel(f'Price {symb}')
         plt.show()
-    
+
+    def _render_symbol_trades(self, symbol):
+        symb_data = self.data[symbol]
+        symb_data['date'] = symb_data['ts_open'].apply(lambda ts: self.to_datetime(ts))
+
+        trades = self.trade_hist[self.trade_hist['symbol'] == symbol].sort_values('ts')
+        trades['side_color'] = trades['side'].apply(lambda side: '#ff0000' if side == 'sell' else '#00ff00')
+        trades['side_symbol'] = trades['side'].apply(lambda side: 'triangle-down' if side == 'sell' 
+                                                        else 'triangle-up')
+
+        fig = make_subplots()
+
+        fig.add_trace(
+            go.Scatter(x=symb_data['date'], 
+                       y=symb_data['price_open'], 
+                       name='price'),
+        )
+
+        fig.add_trace(
+            go.Scatter(x=trades['ts'], 
+                       y=trades['price'],
+                       name='trades',
+                       mode='markers',
+                       marker=dict(color=trades['side_color'], 
+                                   symbol=trades['side_symbol']),
+                       hovertext=trades['quantity'],
+                       hoverinfo='text',
+                       showlegend=True),
+        )
+
+        return fig
+
     def _render_pnl(self):
         self.calculate_pnl()
 
@@ -407,7 +437,7 @@ class BinanceSimulator:
     def render(self, app):
         pnl = self._render_pnl()
         positions = self._render_positions()
-        #trades = self._render_trades()
+        
         app.layout = html.Div(children=[
                         html.H1(f'Simulation report of strategy {str(self.strategy)}'),
 
@@ -415,7 +445,7 @@ class BinanceSimulator:
                         dcc.Graph(
                             id='pnl',
                             figure=pnl
-                        ),
+                        ),                     
 
                         html.H2(f'Position history'),
                         dash_table.DataTable(

@@ -17,6 +17,7 @@ class OrderPrice(Enum):
 
 class OrderFee(Enum):
     # go to Binance fees web page
+    # https://www.binance.com/fr/fee/schedule
     VIP0 = 0.000750
 
 
