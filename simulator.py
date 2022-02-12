@@ -24,6 +24,9 @@ cachedir = 'data/cache'
 memory = Memory(cachedir, verbose=0)
 
 
+def func(x):
+    return x
+
 class BinanceSimulator:
     """Simulator for Binance trading platform. Allow the user to apply back-testing
        on his trading strategies.
